@@ -338,7 +338,8 @@ tr:hover td { background: #f9faff; }
   }
 
   // ── Main fetch ────────────────────────────────────────────────────────────
-  function doFetch() {
+  var _fetchGen=0;
+function doFetch() { var _gen=++_fetchGen;
     document.getElementById('sync').textContent = '\u25CF Fetching...';
     document.getElementById('sync').style.color = '#f59e0b';
     document.getElementById('table').innerHTML = '<div class="loading">\u23F3 Loading from WiseAir archive...</div>';
@@ -357,7 +358,7 @@ tr:hover td { background: #f9faff; }
         .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
         .then(function(jd){ return {col:c, data:jd.data||[]}; })
         .catch(function(e){ return {col:c, data:[]}; });
-    })).then(function(results){
+    })).then(function(results){ if(_gen!==_fetchGen) return;
       var byTs = {};
       results.forEach(function(res){
         res.data.forEach(function(p){

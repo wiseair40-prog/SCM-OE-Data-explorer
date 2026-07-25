@@ -156,7 +156,7 @@ tr:hover td { background: #f9faff; }
       <input type="number" id="fval" placeholder="e.g. 5.8" step="any" style="width:110px">
     </div>
     <div class="fg" style="display:flex;gap:8px;align-items:flex-end">
-      <button class="btn btn-primary" onclick="applyFilters()">Apply Filters</button>
+      <button class="btn btn-primary" onclick="doFetch()">Apply Filters</button>
       <button class="btn btn-outline" onclick="doReset()">Reset</button>
       <button class="btn btn-success" onclick="doExport()">⬇ Export CSV</button>
     </div>
@@ -188,6 +188,19 @@ tr:hover td { background: #f9faff; }
 <script>
   // ── CONFIG — only change SHEET_ID if needed ───────────────────────────────
   var SHEET_ID = '1q0ORu2K2Xyo8CdmvPrUV-N3emXseT03L0lWhgsWUsDA';
+  // WASM604 PART B: data now comes from the WiseAir archive API (TimescaleDB).
+  var API_BASE = 'https://168-144-76-214.sslip.io';
+  var DEVICE_MAP = {
+    'Before Dryer Pressure':  {device:'SOE-Before Dryer Pressure',  keys:'pressure'},
+    'After Dryer Pressure':   {device:'SOE-After Dryer Pressure',   keys:'pressure'},
+    'Dew Point':              {device:'SOE-Dryer Dew Point',        keys:'Dew point,dew point'},
+    'Compressor Outlet Flow': {device:'SOE-Compressor Outlet Flow', keys:'flow'},
+    'Power Meter':            {device:'SOE-Compressor Power',       keys:'Power'},
+    'MC1':                    {device:'SOE-M1',                     keys:'flow'},
+    'MC2':                    {device:'SOE-MC2',                    keys:'flow'},
+    'MC3':                    {device:'SOE-M3',                     keys:'flow'}
+  };
+
   var SHEETS = [
     { name: 'scm oe',     gid: '0',           source: 'scm oe'     },
     { name: 'April 2025', gid: '1031453691',   source: 'April 2025' }
@@ -326,40 +339,41 @@ tr:hover td { background: #f9faff; }
 
   // ── Main fetch ────────────────────────────────────────────────────────────
   function doFetch() {
-    var src = document.getElementById('src').value;
-    document.getElementById('sync').textContent = '● Fetching...';
+    document.getElementById('sync').textContent = '\u25CF Fetching...';
     document.getElementById('sync').style.color = '#f59e0b';
-    document.getElementById('table').innerHTML = '<div class="loading">⏳ Loading from Google Sheets...</div>';
+    document.getElementById('table').innerHTML = '<div class="loading">\u23F3 Loading from WiseAir archive...</div>';
 
-    var toFetch = SHEETS.filter(function(s, i){
-      return src==='all' || (src==='sheet1' && i===0) || (src==='sheet2' && i===1);
-    });
+    var fromV = document.getElementById('from') ? document.getElementById('from').value : '';
+    var toV   = document.getElementById('to')   ? document.getElementById('to').value   : '';
+    var toMs = toV ? new Date(toV+'T23:59:59').getTime() : Date.now();
+    var fromMs = fromV ? new Date(fromV).getTime() : (toMs - 7*86400000);
 
-    Promise.all(toFetch.map(function(s){ return gvizFetch(s.gid, s.source); }))
-      .then(function(results){
-        allData = [];
-        results.forEach(function(rows){ allData = allData.concat(rows); });
-        allData.sort(function(a,b){
-          var ta = getTS(a), tb = getTS(b);
-          return (ta||0) - (tb||0);
+    var cols = COLS.filter(function(c){ return DEVICE_MAP[c]; });
+    Promise.all(cols.map(function(c){
+      var m = DEVICE_MAP[c];
+      var url = API_BASE+'/history?device='+encodeURIComponent(m.device)+
+                '&keys='+encodeURIComponent(m.keys)+'&from='+fromMs+'&to='+toMs+'&bucket=auto';
+      return fetch(url,{cache:'no-store'})
+        .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
+        .then(function(jd){ return {col:c, data:jd.data||[]}; })
+        .catch(function(e){ return {col:c, data:[]}; });
+    })).then(function(results){
+      var byTs = {};
+      results.forEach(function(res){
+        res.data.forEach(function(p){
+          var t = Math.round(p.ts/60000)*60000;
+          var row = byTs[t];
+          if (!row) { row = byTs[t] = { 'Timestamp': new Date(t) };
+            COLS.forEach(function(cc){ row[cc] = ''; }); }
+          if (p.value !== null && p.value !== undefined) row[res.col] = p.value;
         });
-        document.getElementById('sync').textContent = '● Synced (' + allData.length + ' rows)';
-        document.getElementById('sync').style.color = '#22c55e';
-        applyFilters();
-      })
-      .catch(function(err){
-        document.getElementById('sync').textContent = '● Error: ' + err.message;
-        document.getElementById('sync').style.color = '#ef4444';
-        document.getElementById('table').innerHTML =
-          '<div class="err-box">' +
-          '❌ <strong>' + err.message + '</strong><br><br>' +
-          '👉 To fix this:<br>' +
-          '1. Open your Google Sheet<br>' +
-          '2. Click <strong>Share</strong> → <strong>Change to anyone with the link</strong> → set to <strong>Viewer</strong><br>' +
-          '3. Refresh this page<br><br>' +
-          'If already public, open F12 Console and share the exact error for more help.' +
-          '</div>';
       });
+      allData = Object.keys(byTs).map(function(k){ return byTs[k]; });
+      allData.sort(function(a,b){ return getTS(a) - getTS(b); });
+      document.getElementById('sync').textContent = '\u25CF Synced (' + allData.length + ' rows \u00B7 WiseAir archive)';
+      document.getElementById('sync').style.color = allData.length ? '#22c55e' : '#ef4444';
+      applyFilters();
+    });
   }
 
   // ── Client-side filter ────────────────────────────────────────────────────
@@ -412,14 +426,14 @@ tr:hover td { background: #f9faff; }
     if (!v || v === 'all') {
       document.getElementById('from').value = '';
       document.getElementById('to').value   = '';
-      if (allData.length) applyFilters();
+      doFetch();
       return;
     }
     var to = new Date(), from = new Date();
     from.setDate(from.getDate() - parseInt(v));
     document.getElementById('to').value   = to.toISOString().split('T')[0];
     document.getElementById('from').value = from.toISOString().split('T')[0];
-    if (allData.length) applyFilters();
+    doFetch();
   }
 
   function doReset() {
@@ -567,6 +581,11 @@ tr:hover td { background: #f9faff; }
   }
 
   // ── Init ──────────────────────────────────────────────────────────────────
+  (function(){
+    var to=new Date(), fr=new Date(); fr.setDate(fr.getDate()-7);
+    if(document.getElementById('to'))   document.getElementById('to').value=to.toISOString().split('T')[0];
+    if(document.getElementById('from')) document.getElementById('from').value=fr.toISOString().split('T')[0];
+  })();
   doFetch();
 </script>
 </body>
